@@ -31,6 +31,20 @@ job_success_literal = sq.cast(sq.literal(JobStatus.SUCCESS.name), job_status_typ
 job_running_literal = sq.cast(sq.literal(JobStatus.RUNNING.name), job_status_type)
 job_canceled_literal = sq.cast(sq.literal(JobStatus.CANCELED.name), job_status_type)
 
+# Job types that make HTTP requests to a single source domain in their own run().
+# Only these are throttled to one running job per domain across the runner pool.
+_DOMAIN_JOB_TYPES = frozenset(
+    {
+        JobType.NOVEL,
+        JobType.FULL_NOVEL,
+        JobType.CHAPTER,
+        JobType.IMAGE,
+        JobType.FETCH_MISSING,
+        JobType.FETCH_LATEST,
+        JobType.SEARCH_SOURCE,
+    }
+)
+
 
 class JobService:
     # -------------------------------------------------------------------------
@@ -595,6 +609,54 @@ class JobService:
             type=JobType.ARTIFACT_BATCH,
         )
 
+    def fetch_missing_chapters(
+        self,
+        user: User,
+        novel_id: str,
+        *,
+        parent_id: Optional[str] = None,
+        depends_on: Optional[str] = None,
+        **data: Any,
+    ) -> Job:
+        novel = ctx.novels.get(novel_id)
+        data.update(
+            {
+                "novel_id": novel_id,
+                "novel_title": novel.title,
+            }
+        )
+        return self._create(
+            user=user,
+            data=data,
+            parent_id=parent_id,
+            depends_on=depends_on,
+            type=JobType.FETCH_MISSING,
+        )
+
+    def fetch_latest(
+        self,
+        user: User,
+        novel_id: str,
+        *,
+        parent_id: Optional[str] = None,
+        depends_on: Optional[str] = None,
+        **data: Any,
+    ) -> Job:
+        novel = ctx.novels.get(novel_id)
+        data.update(
+            {
+                "novel_id": novel_id,
+                "novel_title": novel.title,
+            }
+        )
+        return self._create(
+            user=user,
+            data=data,
+            parent_id=parent_id,
+            depends_on=depends_on,
+            type=JobType.FETCH_LATEST,
+        )
+
     def search_all_sources(
         self,
         user: User,
@@ -724,6 +786,26 @@ class JobService:
             if active >= search_limit:
                 raise ServerErrors.search_job_limit_reached.with_extra(active)
 
+    def _resolve_domain(self, type: JobType, data: dict) -> Optional[str]:
+        """Resolve the single source domain for throttled crawl jobs (else None)."""
+        if type not in _DOMAIN_JOB_TYPES:
+            return None
+        try:
+            domain = data.get("domain")
+            if domain:
+                return domain
+            url = data.get("url")
+            if url:
+                return ctx.sources.get_domain(url)
+            novel_id = data.get("novel_id")
+            if not novel_id and data.get("chapter_id"):
+                novel_id = ctx.chapters.get(data["chapter_id"]).novel_id
+            if novel_id:
+                return ctx.novels.get(novel_id).domain
+        except Exception:
+            return None
+        return None
+
     def _create(
         self,
         user: User,
@@ -743,6 +825,7 @@ class JobService:
                 depends_on=depends_on,
                 parent_job_id=parent_id,
                 priority=ctx.tier.job_priority(user),
+                domain=self._resolve_domain(type, data),
             )
             sess.add(job)
 
@@ -764,6 +847,7 @@ class JobService:
         artifact: Optional[bool] = None,
         skip_job_ids: Iterable[str] = [],
         skip_user_ids: Iterable[str] = [],
+        skip_domains: Iterable[str] = [],
     ) -> Optional[Job]:
         with ctx.db.session() as sess:
             stmt = sq.select(Job)
@@ -795,6 +879,14 @@ class JobService:
                     sq.or_(
                         Job.priority != JobPriority.LOW,
                         sq.col(Job.user_id).not_in(skip_user_ids),
+                    )
+                )
+
+            if skip_domains:
+                stmt = stmt.where(
+                    sq.or_(
+                        sq.col(Job.domain).is_(None),
+                        sq.col(Job.domain).not_in(skip_domains),
                     )
                 )
 
