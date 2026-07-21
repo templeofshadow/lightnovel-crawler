@@ -21,6 +21,11 @@ class AccessManager:
         UserTier.VIP: True,
     }
     _TRANSLATION_ENABLED = {
+        UserTier.BASIC: True,
+        UserTier.PREMIUM: True,
+        UserTier.VIP: True,
+    }
+    _BATCH_TRANSLATION_ENABLED = {
         UserTier.BASIC: False,
         UserTier.PREMIUM: True,
         UserTier.VIP: True,
@@ -90,6 +95,9 @@ class AccessManager:
     def translation_enabled(self, user: User) -> bool:
         return self._TRANSLATION_ENABLED[user.tier]
 
+    def batch_translation_enabled(self, user: User) -> bool:
+        return self.translation_enabled(user) and self._BATCH_TRANSLATION_ENABLED[user.tier]
+
     def max_active_jobs(self, user: User) -> Optional[int]:
         return self._MAX_ACTIVE_JOBS[user.tier]
 
@@ -106,4 +114,4 @@ class AccessManager:
         return self._MAX_READ_HISTORY[user.tier]
 
     def search_can_fetch_novel_metadata(self, user: User) -> bool:
-        return user.tier == UserTier.VIP
+        return True

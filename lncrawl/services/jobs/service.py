@@ -25,12 +25,6 @@ from .utils import select_ancestors, select_descendants
 
 T = TypeVar("T")
 
-job_status_type = Job.__table__.c.status.type  # type: ignore
-job_failed_literal = sq.cast(sq.literal(JobStatus.FAILED.name), job_status_type)
-job_success_literal = sq.cast(sq.literal(JobStatus.SUCCESS.name), job_status_type)
-job_running_literal = sq.cast(sq.literal(JobStatus.RUNNING.name), job_status_type)
-job_canceled_literal = sq.cast(sq.literal(JobStatus.CANCELED.name), job_status_type)
-
 # Job types that make HTTP requests to a single source domain in their own run().
 # Only these are throttled to one running job per domain across the runner pool.
 _DOMAIN_JOB_TYPES = frozenset(
@@ -553,6 +547,7 @@ class JobService:
         parent_id: Optional[str] = None,
         depends_on: Optional[str] = None,
         language: Optional[LanguageCode] = None,
+        volume: Optional[int] = None,
         **data: Any,
     ) -> Job:
         data.update(
@@ -560,6 +555,7 @@ class JobService:
                 "novel_id": novel_id,
                 "format": format,
                 "language": language,
+                "volume": volume,
             }
         )
         if not data.get("novel_title"):
@@ -585,6 +581,7 @@ class JobService:
         parent_id: Optional[str] = None,
         depends_on: Optional[str] = None,
         language: Optional[LanguageCode] = None,
+        volume: Optional[int] = None,
         **data: Any,
     ) -> Job:
         data.update(
@@ -592,6 +589,7 @@ class JobService:
                 "novel_id": novel_id,
                 "formats": formats,
                 "language": language,
+                "volume": volume,
             }
         )
         if not data.get("novel_title"):
@@ -742,7 +740,7 @@ class JobService:
                 sess,
                 job_id,
                 error=f"Canceled by {who}",
-                status=job_canceled_literal,
+                status=JobStatus.CANCELED,
             )
             sess.commit()
 
@@ -928,7 +926,7 @@ class JobService:
         sa_is_done = sa_done == sa_total
 
         sa_status = sq.case(
-            (sa_is_done, job_success_literal),
+            (sa_is_done, JobStatus.SUCCESS),
             else_=Job.status,
         )
         sa_started_at = sq.case(
@@ -967,7 +965,7 @@ class JobService:
             )
             .values(
                 is_done=True,
-                status=job_canceled_literal,
+                status=JobStatus.CANCELED,
                 error="Canceled by one of the parent",
                 started_at=sq.func.coalesce(Job.started_at, now),
                 finished_at=sq.func.coalesce(Job.finished_at, now),
@@ -1002,7 +1000,7 @@ class JobService:
             sess,
             job_id,
             error=reason,
-            status=job_failed_literal,
+            status=JobStatus.FAILED,
         )
 
     def cancel_if_dangling(self, job: Job) -> bool:
